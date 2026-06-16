@@ -1,6 +1,6 @@
 [package]
 name = "monarch-todo"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Fast TUI todo manager for Monarch (shares the monarch todo JSON store)"
 authors = ["y0no"]

@@ -4,6 +4,7 @@
 //! the same JSON store as the rest of Monarch.
 
 mod cli;
+mod reminder;
 mod store;
 mod tui;
 

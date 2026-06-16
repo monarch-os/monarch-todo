@@ -73,6 +73,11 @@ pub enum Command {
     Edit,
     /// Print Noctalia bar-widget JSON (open-task count); empty object hides it
     Bar,
+    /// Re-arm reminder timers from the store (run at login and TUI startup)
+    ReloadReminders,
+    /// Fire a task's reminder, then clear it (invoked by the systemd timer)
+    #[command(hide = true)]
+    ReminderFire { id: String },
 }
 
 pub fn run(command: Command) -> Result<()> {
@@ -228,6 +233,8 @@ pub fn run(command: Command) -> Result<()> {
                 println!("{}", out);
             }
         }
+        Command::ReloadReminders => crate::reminder::reconcile()?,
+        Command::ReminderFire { id } => crate::reminder::fire(&id)?,
     }
     Ok(())
 }
