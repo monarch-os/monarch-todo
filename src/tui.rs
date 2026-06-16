@@ -22,7 +22,6 @@ use ratatui::{
 };
 use std::collections::HashSet;
 use std::io;
-use std::process::Command;
 
 pub fn run() -> Result<()> {
     enable_raw_mode()?;
@@ -157,19 +156,10 @@ struct App {
 
 impl App {
     fn new() -> Result<App> {
-        let mut store = Store::load()?;
-        // Drop reminders whose time has passed so the UI only shows live ones.
-        let now = Local::now();
-        let mut changed = false;
-        for t in &mut store.tasks {
-            if t.reminder.as_deref().and_then(parse_reminder).is_some_and(|dt| dt <= now) {
-                t.reminder = None;
-                changed = true;
-            }
-        }
-        if changed {
-            let _ = store.save();
-        }
+        // Re-arm reminder timers from the store, fire any missed, clear past —
+        // before we read the store so the UI matches what will actually fire.
+        let _ = crate::reminder::reconcile();
+        let store = Store::load()?;
         let mut app = App {
             store,
             scope: Scope::Open,
@@ -578,33 +568,16 @@ impl App {
             self.status = "reminder: that time is in the past".into();
             return;
         }
-        let text = self.store.tasks[idx].text.clone();
-        // Match the notification urgency to the task's priority.
-        let urgency = match self.store.tasks[idx].priority {
-            Some(Priority::A) => "critical",
-            Some(Priority::B) => "normal",
-            Some(Priority::C) => "low",
-            None => "normal",
-        };
-        match Command::new("monarch-reminder")
-            .arg(minutes.to_string())
-            .arg("-u")
-            .arg(urgency)
-            .arg(&text)
-            .spawn()
-        {
-            Ok(_) => {
-                let target = Local::now() + Duration::minutes(minutes);
-                let id = self.store.tasks[idx].id.clone();
-                self.store.tasks[idx].reminder =
-                    Some(target.format("%Y-%m-%dT%H:%M:%S%:z").to_string());
-                self.persist();
-                self.rebuild();
-                self.select_task(&id);
-                self.status = format!("🔔 reminder in {}", human_minutes(minutes));
-            }
-            Err(e) => self.status = format!("reminder failed: {}", e),
-        }
+        // Store the absolute target on the task (source of truth), then arm a
+        // systemd timer to match. reconcile() re-creates it after a reboot.
+        let target = chrono::Local::now() + Duration::minutes(minutes);
+        let id = self.store.tasks[idx].id.clone();
+        self.store.tasks[idx].reminder = Some(target.format("%Y-%m-%dT%H:%M:%S%:z").to_string());
+        self.persist();
+        crate::reminder::ensure(&self.store.tasks[idx]);
+        self.rebuild();
+        self.select_task(&id);
+        self.status = format!("🔔 reminder in {}", human_minutes(minutes));
     }
 
     fn key_filter(&mut self, code: KeyCode) {
