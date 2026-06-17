@@ -16,11 +16,14 @@ commands, the bar widget, and this TUI all read and write one source of truth.
 - **Priorities**: coloured dots 🔴 high · 🟠 medium · 🟡 low (stored as A/B/C).
 - **Filtering**: incremental by title (`/`); fold categories to focus.
 - **Reminders**: pick from presets (hours → weeks) or a free duration like
-  `2d`, `3w`, `1h30`; schedules via `monarch-reminder`.
+  `2d`, `3w`, `1h30`. Each reminder is a transient systemd `--user` timer
+  (`monarch-todo-reminder-<id>`) that fires `monarch-todo reminder-fire <id>`
+  at the absolute time; the store's `reminder` field is the source of truth and
+  is re-armed at session start (`monarch-todo reload-reminders`).
 - **Shared store**: 100% compatible with `monarch todo` (CLI) — atomic writes,
   jq-identical formatting, tolerant of legacy `done` items.
 - **Fits like fuzzel**: launched in a floating window sized by a Niri
-  window-rule (`org.monarch.todo`); the layout is responsive.
+  window-rule (`org.monarch.monarch-todo`); the layout is responsive.
 
 ## Build
 
