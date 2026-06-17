@@ -58,15 +58,18 @@ fn live_timers() -> Vec<String> {
 }
 
 fn stop_unit(base: &str) {
+    // Best-effort cleanup: the unit may not exist (e.g. arming a reminder for
+    // the first time). Use `.output()` so systemd's "Unit not loaded" noise is
+    // captured instead of leaking to the terminal/TUI.
     for kind in ["timer", "service"] {
         let _ = Command::new("systemctl")
             .args(["--user", "stop", &format!("{}.{}", base, kind)])
-            .status();
+            .output();
     }
     // Clear any failed state so the unit name can be reused.
     let _ = Command::new("systemctl")
         .args(["--user", "reset-failed", &format!("{}.timer", base)])
-        .status();
+        .output();
 }
 
 fn create_timer(task: &Task, when: DateTime<Local>) {
