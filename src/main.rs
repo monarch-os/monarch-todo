@@ -1,12 +1,12 @@
 //! monarch-todo — fast todo manager for Monarch.
 //!
-//! No subcommand → the TUI. A subcommand → the scriptable CLI. Both operate on
-//! the same JSON store as the rest of Monarch.
+//! Noctalia and shell scripts share this backend and the same locked store.
 
 mod cli;
+mod desktop;
+mod input;
 mod reminder;
 mod store;
-mod tui;
 
 use clap::Parser;
 
@@ -14,7 +14,12 @@ fn main() {
     let args = cli::Cli::parse();
     let result = match args.command {
         Some(command) => cli::run(command),
-        None => tui::run(),
+        None => {
+            use clap::CommandFactory;
+            let _ = cli::Cli::command().print_help();
+            println!();
+            Ok(())
+        }
     };
     if let Err(e) = result {
         eprintln!("monarch-todo: {e:#}");

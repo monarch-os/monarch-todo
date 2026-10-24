@@ -1,0 +1,21 @@
+name: Tests
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Install pinned Luau
+        run: |
+          curl -fL https://github.com/luau-lang/luau/releases/download/0.744/luau-ubuntu.zip -o /tmp/luau.zip
+          echo '6506f0852c623aaffcb28494aac16c26dc04a269ea0e16cc0aafc8c8ac79f3ec  /tmp/luau.zip' | sha256sum -c
+          mkdir -p /tmp/luau
+          unzip /tmp/luau.zip -d /tmp/luau
+          chmod +x /tmp/luau/luau
+      - name: Test backend, package migration and panel
+        run: LUAU_BIN=/tmp/luau/luau bash test/run

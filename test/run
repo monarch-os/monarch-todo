@@ -1,0 +1,16 @@
+#!/bin/bash
+set -euo pipefail
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
+export TMPDIR=${TMPDIR:-/tmp/opencode}
+mkdir -p "$TMPDIR"
+luau=${LUAU_BIN:-luau}
+command -v "$luau" >/dev/null || { echo 'Set LUAU_BIN to a Luau interpreter' >&2; exit 1; }
+cargo fmt --check
+cargo test --locked
+cargo build --locked
+cargo build --locked --release
+python3 test/integration.py
+python3 test/desktop.py
+python3 test/panel.py "$luau"
+cargo clippy --locked --all-targets -- -D warnings
+bash -n desktop/integration.sh

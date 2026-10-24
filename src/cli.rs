@@ -8,9 +8,15 @@ use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "monarch-todo", version, about = "Fast todo manager (TUI + CLI)")]
-#[command(long_about = "Run with no subcommand to open the TUI; use a subcommand for scripting.\n\
-    Store: $MONARCH_TODO_FILE || ${XDG_STATE_HOME:-$HOME/.local/state}/monarch/todo.json")]
+#[command(
+    name = "monarch-todo",
+    version,
+    about = "Task and reminder backend for Monarch"
+)]
+#[command(
+    long_about = "Use the Noctalia panel for interactive tasks, or these commands for scripting.\n\
+    Store: $MONARCH_TODO_FILE || ${XDG_STATE_HOME:-$HOME/.local/state}/monarch/todo.json"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
@@ -18,6 +24,26 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// Open the Noctalia panel (register its packaged plugin if needed)
+    Panel,
+    /// Register the packaged plugin and enable reminders for this user
+    SetupDesktop,
+    /// Disable this user's plugin/reminders, preserving data and custom files
+    RemoveDesktop,
+    /// Print the panel's translated strings as JSON
+    Strings,
+    /// Parse Walker-style input and print JSON without saving anything
+    Parse { query: String },
+    /// Create a task from Walker-style input and print its JSON
+    Quick { query: String },
+    /// Replace task fields using the same input syntax (keeps its ID and history)
+    Update { id: String, query: String },
+    /// Set or remove a reminder; use '-' to remove it
+    Reminder { id: String, when: String },
+    /// Delay a notification without shifting the recurring task's cadence
+    Snooze { id: String, when: String },
+    /// Undo the last user mutation, refusing conflicting later changes
+    Undo,
     /// Add a task
     Add {
         /// Task text (joined)
@@ -43,14 +69,9 @@ pub enum Command {
         format: String,
     },
     /// Mark a task as done
-    Done {
-        id: String,
-    },
+    Done { id: String },
     /// Set a task's status
-    Status {
-        id: String,
-        status: String,
-    },
+    Status { id: String, status: String },
     /// Update a task's text, priority, due date, or tags
     Set {
         id: String,
@@ -64,25 +85,161 @@ pub enum Command {
         category: Option<String>,
     },
     /// Remove a task
-    Rm {
-        id: String,
-    },
+    Rm { id: String },
     /// Remove all finished tasks (done and cancelled)
     Clear,
     /// Open the raw store in $EDITOR
     Edit,
     /// Print Noctalia bar-widget JSON (open-task count); empty object hides it
     Bar,
-    /// Re-arm reminder timers from the store (run at login and TUI startup)
+    /// Re-arm reminder timers and deliver missed reminders (run at login)
     ReloadReminders,
     /// Fire a task's reminder, then clear it (invoked by the systemd timer)
     #[command(hide = true)]
-    ReminderFire { id: String },
+    ReminderFire {
+        id: String,
+        #[arg(long)]
+        expected: Option<String>,
+    },
 }
 
 pub fn run(command: Command) -> Result<()> {
+    // These operations own their store transaction, or need none. Never acquire
+    // the store lock twice in one process.
+    let command = match command {
+        Command::Panel => return crate::desktop::run("open"),
+        Command::SetupDesktop => return crate::desktop::run("setup"),
+        Command::RemoveDesktop => return crate::desktop::run("remove"),
+        Command::Strings => {
+            println!("{}", crate::desktop::strings());
+            return Ok(());
+        }
+        Command::Parse { query } => {
+            println!(
+                "{}",
+                serde_json::to_string(&crate::input::parse(&query, chrono::Local::now())?)?
+            );
+            return Ok(());
+        }
+        Command::ReloadReminders => return crate::reminder::reconcile(),
+        Command::ReminderFire { id, expected } => {
+            return crate::reminder::fire(&id, expected.as_deref())
+        }
+        other => other,
+    };
     let mut store = Store::load()?;
+    // Listing/bar polling never needs an undo snapshot or timer reconciliation.
+    let mutated = !matches!(&command, Command::List { .. } | Command::Bar);
+    let before = if mutated && !matches!(&command, Command::Undo | Command::Edit) {
+        store.tasks.clone()
+    } else {
+        Vec::new()
+    };
     match command {
+        Command::Undo => {
+            store.undo()?;
+            println!("Undone");
+            drop(store);
+            return crate::reminder::reconcile();
+        }
+        Command::Snooze { id, when } => {
+            let i = store.find(&id).map_err(anyhow::Error::msg)?;
+            store.snooze(i, &when)?;
+            store.save_user_change(&before)?;
+            println!("Snoozed [{}]", store.tasks[i].id);
+        }
+        Command::Quick { query } => {
+            let parsed = crate::input::parse(&query, chrono::Local::now())?;
+            if let Some(date) = &parsed.reminder {
+                if chrono::DateTime::parse_from_rfc3339(date)? <= chrono::Local::now() {
+                    bail!("The scheduled time is in the past");
+                }
+            }
+            let due = parsed.reminder.as_ref().map(|d| d[..10].to_owned());
+            let task = store.add(parsed.text, parsed.priority, due, parsed.category);
+            task.reminder = parsed.reminder;
+            task.recurrence = parsed.recurrence;
+            let json = serde_json::to_string(task)?;
+            store.save_user_change(&before)?;
+            println!("{json}");
+        }
+        Command::Update { id, query } => {
+            let parsed = crate::input::parse(&query, chrono::Local::now())?;
+            let i = store.find(&id).map_err(anyhow::Error::msg)?;
+            if !store.tasks[i].status.is_open() {
+                bail!("Reopen the task before editing it");
+            }
+            let task = &mut store.tasks[i];
+            let same_schedule = match (&task.reminder, &parsed.reminder) {
+                (None, None) => true,
+                (Some(old), Some(new)) => chrono::DateTime::parse_from_rfc3339(old)
+                    .ok()
+                    .zip(chrono::DateTime::parse_from_rfc3339(new).ok())
+                    .is_some_and(|(old, new)| old == new),
+                _ => false,
+            };
+            if !same_schedule {
+                if let Some(date) = &parsed.reminder {
+                    if chrono::DateTime::parse_from_rfc3339(date)? <= chrono::Local::now() {
+                        bail!("The scheduled time is in the past");
+                    }
+                }
+            }
+            let old_anchor = task.recurrence.as_ref().and_then(|r| r.anchor_day);
+            let same_rule = match (&task.recurrence, &parsed.recurrence) {
+                (Some(old), Some(new)) => old.every == new.every && old.unit == new.unit,
+                (None, None) => true,
+                _ => false,
+            };
+            if !same_schedule || !same_rule {
+                task.recurrence_anchor = None;
+            }
+            task.text = parsed.text;
+            task.priority = parsed.priority;
+            task.category = parsed.category;
+            if let Some(date) = &parsed.reminder {
+                task.due = Some(date[..10].to_owned());
+            } else if task.reminder.is_some() {
+                task.due = None;
+            }
+            task.reminder = parsed.reminder;
+            task.recurrence = parsed.recurrence;
+            if same_schedule {
+                if same_rule {
+                    if let Some(rule) = &mut task.recurrence {
+                        rule.anchor_day = old_anchor.or(rule.anchor_day);
+                    }
+                }
+            } else {
+                task.notified = false;
+            }
+            store.save_user_change(&before)?;
+        }
+        Command::Reminder { id, when } => {
+            let i = store.find(&id).map_err(anyhow::Error::msg)?;
+            let task = &mut store.tasks[i];
+            if !task.status.is_open() {
+                bail!("Reopen the task before scheduling a reminder");
+            }
+            if when == "-" {
+                task.reminder = None;
+                task.recurrence = None;
+            } else {
+                let date = crate::input::parse_date(&when, chrono::Local::now())?;
+                if date <= chrono::Local::now() {
+                    bail!("The scheduled time is in the past");
+                }
+                task.reminder = Some(date.to_rfc3339());
+                task.due = Some(date.format("%Y-%m-%d").to_string());
+                if let Some(rule) = &mut task.recurrence {
+                    use chrono::Datelike;
+                    rule.anchor_day = Some(date.day());
+                }
+            }
+            task.notified = false;
+            task.recurrence_anchor = None;
+            store.save_user_change(&before)?;
+        }
         Command::Add {
             text,
             priority,
@@ -95,10 +252,9 @@ pub fn run(command: Command) -> Result<()> {
             }
             let priority = parse_priority_opt(priority.as_deref())?;
             let due = parse_due_opt(due.as_deref())?;
-            let category = category.as_deref().and_then(crate::store::normalize_category);
             let task = store.add(text.trim().to_string(), priority, due, category);
             let id = task.id.clone();
-            store.save()?;
+            store.save_user_change(&before)?;
             println!("Added [{}]", id);
         }
         Command::List {
@@ -129,6 +285,9 @@ pub fn run(command: Command) -> Result<()> {
                 })
                 .collect();
             view.sort_by(|a, b| {
+                if format == "json" {
+                    return crate::store::cmp_tasks(a, b);
+                }
                 group_rank(a.category_key())
                     .cmp(&group_rank(b.category_key()))
                     .then_with(|| a.category_key().cmp(b.category_key()))
@@ -136,7 +295,18 @@ pub fn run(command: Command) -> Result<()> {
             });
 
             match format.as_str() {
-                "json" => println!("{}", serde_json::to_string_pretty(&view)?),
+                "json" => {
+                    let now = chrono::Local::now().timestamp_millis();
+                    let payload = view
+                        .iter()
+                        .map(|task| {
+                            let mut value = serde_json::to_value(task)?;
+                            value["elapsed_ms"] = task.elapsed_ms_at(now).into();
+                            Ok(value)
+                        })
+                        .collect::<Result<Vec<serde_json::Value>>>()?;
+                    println!("{}", serde_json::to_string_pretty(&payload)?);
+                }
                 "plain" => {
                     if view.is_empty() {
                         println!("No tasks.");
@@ -158,15 +328,15 @@ pub fn run(command: Command) -> Result<()> {
         }
         Command::Done { id } => {
             let i = store.find(&id).map_err(anyhow::Error::msg)?;
-            store.tasks[i].status = Status::Done;
-            store.save()?;
+            store.set_status(i, Status::Done)?;
+            store.save_user_change(&before)?;
             println!("Completed [{}]", store.tasks[i].id);
         }
         Command::Status { id, status } => {
             let s = parse_status(&status)?;
             let i = store.find(&id).map_err(anyhow::Error::msg)?;
-            store.tasks[i].status = s;
-            store.save()?;
+            store.set_status(i, s)?;
+            store.save_user_change(&before)?;
             println!("[{}] → {}", store.tasks[i].id, status.to_lowercase());
         }
         Command::Set {
@@ -192,23 +362,23 @@ pub fn run(command: Command) -> Result<()> {
             if let Some(d) = due {
                 store.tasks[i].due = parse_due_opt(Some(&d))?;
             }
-            if let Some(c) = category {
-                store.tasks[i].category = crate::store::normalize_category(&c);
+            if let Some(category) = category {
+                store.tasks[i].category = crate::store::normalize_category(&category);
             }
-            store.save()?;
+            store.save_user_change(&before)?;
             println!("Updated [{}]", store.tasks[i].id);
         }
         Command::Rm { id } => {
             let i = store.find(&id).map_err(anyhow::Error::msg)?;
             let task = store.tasks.remove(i);
-            store.save()?;
+            store.save_user_change(&before)?;
             println!("Removed [{}] {}", task.id, task.text);
         }
         Command::Clear => {
-            let before = store.tasks.len();
+            let before_count = store.tasks.len();
             store.tasks.retain(|t| t.status.is_open());
-            let removed = before - store.tasks.len();
-            store.save()?;
+            let removed = before_count - store.tasks.len();
+            store.save_user_change(&before)?;
             println!("Cleared {} finished task(s).", removed);
         }
         Command::Edit => {
@@ -217,10 +387,14 @@ pub fn run(command: Command) -> Result<()> {
             if !store.path.exists() {
                 store.save()?;
             }
-            let status = std::process::Command::new(editor).arg(&store.path).status()?;
+            let status = std::process::Command::new(editor)
+                .arg(&store.path)
+                .status()?;
             if !status.success() {
                 bail!("editor exited with an error");
             }
+            drop(store);
+            return crate::reminder::reconcile();
         }
         Command::Bar => {
             let open = store.tasks.iter().filter(|t| t.status.is_open()).count();
@@ -233,8 +407,20 @@ pub fn run(command: Command) -> Result<()> {
                 println!("{}", out);
             }
         }
-        Command::ReloadReminders => crate::reminder::reconcile()?,
-        Command::ReminderFire { id } => crate::reminder::fire(&id)?,
+        Command::Panel
+        | Command::SetupDesktop
+        | Command::RemoveDesktop
+        | Command::Strings
+        | Command::Parse { .. }
+        | Command::ReloadReminders
+        | Command::ReminderFire { .. } => {
+            unreachable!()
+        }
+    }
+    // Synchronize every write, not only the interactive UI. Holding the same
+    // lock prevents stale processes from cancelling a newer timer.
+    if mutated {
+        crate::reminder::sync(&store)?;
     }
     Ok(())
 }
@@ -267,21 +453,12 @@ fn parse_due_opt(s: Option<&str>) -> Result<Option<String>> {
 }
 
 fn parse_status(s: &str) -> Result<Status> {
-    Status::parse(s).ok_or_else(|| anyhow::anyhow!("Status must be todo, doing, done, or cancelled."))
+    Status::parse(s)
+        .ok_or_else(|| anyhow::anyhow!("Status must be todo, doing, done, or cancelled."))
 }
 
 fn is_iso_date(s: &str) -> bool {
-    let b = s.as_bytes();
-    b.len() == 10
-        && b[4] == b'-'
-        && b[7] == b'-'
-        && b.iter().enumerate().all(|(i, c)| {
-            if i == 4 || i == 7 {
-                *c == b'-'
-            } else {
-                c.is_ascii_digit()
-            }
-        })
+    s.len() == 10 && chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok()
 }
 
 /// Uncategorized tasks (key "") sort after named categories.
@@ -306,6 +483,18 @@ fn render_plain(t: &Task) -> String {
     if let Some(due) = &t.due {
         out.push_str("  ⏰");
         out.push_str(due);
+    }
+    if let Some(category) = &t.category {
+        out.push_str(&format!("  #{category}"));
+    }
+    let seconds = t.elapsed_ms_at(chrono::Local::now().timestamp_millis()) / 1_000;
+    if seconds > 0 || t.started_at_ms.is_some() {
+        out.push_str(&format!(
+            "  ⏱ {:02}:{:02}:{:02}",
+            seconds / 3600,
+            (seconds / 60) % 60,
+            seconds % 60
+        ));
     }
     out
 }
