@@ -92,9 +92,14 @@ impl Recurrence {
                     }
                     .context("Recurrence date overflow")?;
                     if matches!(self.unit, Unit::Months | Unit::Years) {
+                        let last_day = (28..=31)
+                            .rev()
+                            .find(|day| date.with_day(*day).is_some())
+                            .unwrap();
+                        let day = self.anchor_day.unwrap_or(base.day()).min(last_day);
                         date = date
-                            .with_day(self.anchor_day.unwrap_or(base.day()))
-                            .unwrap_or(date);
+                            .with_day(day)
+                            .context("Invalid recurrence anchor day")?;
                     }
                     // Reject nonexistent local times rather than silently changing the hour.
                     Local

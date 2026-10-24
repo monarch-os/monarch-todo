@@ -211,6 +211,18 @@ class Backend(unittest.TestCase):
         pending = next(t for t in self.tasks() if t["status"] == "todo")
         self.assertEqual(pending["reminder"], "2030-03-31T09:00:00+02:00")
 
+    def test_bimonthly_anchor_clamps_to_each_target_month(self):
+        task = self.quick('2030-12-31T09:00:00+01:00 > Bimonthly @every:2mo')
+        self.cli('done', task['id'])
+        february = next(t for t in self.tasks() if t['status'] == 'todo')
+        self.assertTrue(february['reminder'].startswith('2031-02-28T09:00:00'))
+        self.cli('done', february['id'])
+        april = next(t for t in self.tasks() if t['status'] == 'todo')
+        self.assertTrue(april['reminder'].startswith('2031-04-30T09:00:00'))
+        self.cli('done', april['id'])
+        june = next(t for t in self.tasks() if t['status'] == 'todo')
+        self.assertTrue(june['reminder'].startswith('2031-06-30T09:00:00'))
+
     def test_priorities_sort_across_categories(self):
         self.quick("Normal #A")
         self.quick("Low !low #B")
