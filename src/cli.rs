@@ -197,10 +197,12 @@ pub fn run(command: Command) -> Result<()> {
             task.text = parsed.text;
             task.priority = parsed.priority;
             task.category = parsed.category;
-            if let Some(date) = &parsed.reminder {
-                task.due = Some(date[..10].to_owned());
-            } else if task.reminder.is_some() {
-                task.due = None;
+            if !same_schedule {
+                if let Some(date) = &parsed.reminder {
+                    task.due = Some(date[..10].to_owned());
+                } else if task.reminder.is_some() {
+                    task.due = None;
+                }
             }
             task.reminder = parsed.reminder;
             task.recurrence = parsed.recurrence;

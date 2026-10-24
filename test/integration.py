@@ -230,6 +230,29 @@ class Backend(unittest.TestCase):
         args = next(value for key, value in timers.items() if key.startswith("monarch-todo-reminder-" + task["id"] + "-"))
         self.assertIn("--on-calendar=2030-01-01 08:00:01 UTC", args)
 
+    def test_unrelated_mutation_preserves_an_overdue_timer_awaiting_delivery(self):
+        identifier, value = self.expired()
+        date = dt.datetime.fromisoformat(value)
+        seconds = int(date.timestamp())
+        nanos = date.microsecond * 1000
+        unit = f"monarch-todo-reminder-{identifier}-{seconds}-{nanos}"
+        # Model the real systemd delay between a due timestamp and delivery.
+        (self.root / 'timers.json').write_text(json.dumps({unit: ['pending delivery']}))
+        self.quick('An unrelated task')
+        self.assertIn(unit, json.loads((self.root / 'timers.json').read_text()))
+        self.cli('reminder-fire', identifier, '--expected', value)
+        self.assertEqual(len(self.notifications()), 1)
+
+    def test_editing_snoozed_metadata_preserves_original_due_date(self):
+        task = self.quick('2031-01-31T09:00:00+01:00 > Original @monthly #Work')
+        self.cli('snooze', task['id'], '2031-02-02T15:00:00+01:00')
+        self.cli('update', task['id'], '2031-02-02T15:00:00+01:00 > Renamed @monthly !high #Home')
+        edited = self.tasks()[0]
+        self.assertEqual(edited['due'], '2031-01-31')
+        self.assertEqual(edited['recurrence_anchor'], task['reminder'])
+        self.cli('update', task['id'], '2031-02-03T15:00:00+01:00 > Rescheduled @monthly')
+        self.assertEqual(self.tasks()[0]['due'], '2031-02-03')
+
     def test_invalid_clock_is_not_silently_normalized(self):
         self.cli("quick", "tomorrow at 25:00 > Invalid", ok=False)
         self.cli("quick", "2000-01-01T00:00:00Z > Past", ok=False)

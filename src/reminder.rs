@@ -79,9 +79,6 @@ pub fn sync(store: &Store) -> Result<()> {
             continue;
         };
         let date = DateTime::parse_from_rfc3339(value).context("Invalid stored reminder")?;
-        if date <= now {
-            continue;
-        }
         // OnCalendar below has second precision; never schedule before a
         // fractional stored timestamp, or fire() would correctly reject it.
         let scheduled = if date.timestamp_subsec_nanos() > 0 {
@@ -96,7 +93,9 @@ pub fn sync(store: &Store) -> Result<()> {
             date.timestamp_subsec_nanos()
         );
         wanted.insert(unit.clone());
-        if live.contains(&unit) {
+        // A due timer may still be waiting for its rounded deadline/systemd's
+        // scheduling window. Unrelated writes must not cancel that delivery.
+        if live.contains(&unit) || date <= now {
             continue;
         }
         let _ = Command::new("systemctl")
