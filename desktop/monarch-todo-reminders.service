@@ -1,0 +1,10 @@
+[Unit]
+Description=Re-arm monarch-todo reminders from the store
+After=graphical-session.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/monarch-todo reload-reminders
+
+[Install]
+WantedBy=graphical-session.target

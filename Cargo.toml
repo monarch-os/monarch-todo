@@ -1,8 +1,8 @@
 [package]
 name = "monarch-todo"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2021"
-description = "Fast TUI todo manager for Monarch (shares the monarch todo JSON store)"
+description = "Task and reminder backend for Monarch"
 authors = ["y0no"]
 license = "MIT"
 
@@ -11,14 +11,12 @@ name = "monarch-todo"
 path = "src/main.rs"
 
 [dependencies]
-# TUI — pinned to the same versions as monarch-lazyvpn
-ratatui = "0.26"
-crossterm = "0.27"
-
 # Store
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = "0.4"
+interim = { version = "0.2.1", features = ["chrono_0_4"] }
+fs2 = "0.4"
 
 # CLI
 clap = { version = "4", features = ["derive"] }
@@ -26,7 +24,6 @@ clap = { version = "4", features = ["derive"] }
 # Misc
 anyhow = "1"
 rand = "0.8"
-unicode-width = "0.1"
 
 [profile.release]
 opt-level = 3

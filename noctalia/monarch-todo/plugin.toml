@@ -1,0 +1,20 @@
+id = "monarch/todo"
+name = "Monarch Tasks"
+version = "1.0.0"
+# Native scroll revealKey keeps keyboard selection visible (API 33).
+plugin_api = 33
+author = "monarch"
+license = "MIT"
+description = "Keyboard-first tasks, natural dates and recurring reminders, powered by monarch-todo."
+icon = "checkbox"
+
+[[panel]]
+id = "panel"
+entry = "panel.luau"
+width = 580
+height = 320
+placement = "floating"
+position = "center"
+keyboard_focus = "on_demand"
+capture_keys = ["up", "down", "ctrl+j", "ctrl+k", "return", "ctrl+return", "ctrl+space", "ctrl+n", "ctrl+e", "ctrl+d", "ctrl+shift+x", "ctrl+s", "ctrl+m", "ctrl+alt+z", "ctrl+r", "alt+left", "tab", "escape"]
+dismiss_on_outside_click = true

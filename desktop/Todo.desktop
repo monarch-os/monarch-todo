@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Name=Tasks
+Name[fr]=Tâches
+Comment=Tasks and reminders
+Comment[fr]=Tâches et rappels
+Exec=monarch-todo panel
+Terminal=false
+Type=Application
+Icon=view-task
+StartupNotify=false
